@@ -416,12 +416,13 @@ TOOL_DECLARATIONS = [
     {
         "name": "save_memory",
         "description": (
-            "Save an important personal fact about the user to long-term memory. "
-            "Call this silently whenever the user reveals something worth remembering: "
-            "name, age, city, job, preferences, hobbies, relationships, projects, or future plans. "
-            "Do NOT call for: weather, reminders, searches, or one-time commands. "
-            "Do NOT announce that you are saving — just call it silently. "
-            "Values must be in English regardless of the conversation language."
+            "Save an important personal fact or explicit user preference to long-term memory. "
+            "Do NOT infer or save a response-language preference from the language the user speaks. "
+            "Only when the user directly instructs you to speak in a named language, save "
+            "category='preferences', key='response_language', value=<that named language>. "
+            "If the user directly asks to return to British English, save value='British English'. "
+            "Never overwrite this preference merely because the user's next message is in another language. "
+            "Do NOT announce saving — just call it silently. Values must be concise and in English."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -429,8 +430,8 @@ TOOL_DECLARATIONS = [
                 "category": {
                     "type": "STRING",
                     "description": (
-                        "identity — name, age, birthday, city, job, language, nationality | "
-                        "preferences — favorite food/color/music/film/game/sport, hobbies | "
+                        "identity — name, age, birthday, city, job, nationality | "
+                        "preferences — favorite food/color/music/film/game/sport, hobbies, explicit response_language | "
                         "projects — active projects, goals, things being built | "
                         "relationships — friends, family, partner, colleagues | "
                         "wishes — future plans, things to buy, travel dreams | "
@@ -1751,7 +1752,12 @@ class JarvisLive:
             e = identity.get(k, {})
             return (e.get("value", "") if isinstance(e, dict) else str(e)).strip()
 
-        lang = _val("language")
+        # Only an explicitly selected response language can override the default.
+        # Legacy identity.language entries are observations and must not steer speech.
+        response_prefs = memory.get("preferences", {}) or {}
+        response_lang_entry = response_prefs.get("response_language", {})
+        lang = (response_lang_entry.get("value", "") if isinstance(response_lang_entry, dict)
+                else str(response_lang_entry)).strip() or "British English"
         name = _val("name")
         time_str = datetime.now().strftime("%H:%M")
 
@@ -1764,12 +1770,13 @@ class JarvisLive:
             return
 
         # ── Phase 1: instant greeting ─────────────────────────────────────────
-        # The briefing fires before the user has said anything, so the
-        # remembered language is the only signal there is. It is a starting
-        # point, not a setting: the moment they reply, their language wins.
-        lang_clause = (f" Speak this greeting in {lang}, then follow the "
-                       f"user's own language from their first reply onward."
-                       if lang else "")
+        # The greeting must obey the persisted explicit preference, or British English.
+        # Never switch merely to mirror the language of the user's next reply.
+        lang_clause = (
+            f" Speak this greeting in {lang}. Keep using {lang} even if the user "
+            "speaks another language; change only after a direct instruction "
+            "to use a different response language."
+        )
         name_clause = f" Address the user as {name}." if name else ""
 
         # Inject last session context if available — pop removes it so it's never repeated
@@ -1803,9 +1810,11 @@ class JarvisLive:
         # ── Phase 2: fire as soon as Phase 1 audio is done ───────────────────
         async def _deliver_news():
             try:
-                lang_str = (f" Speak in {lang} unless the user has since "
-                            f"spoken another language, in which case use theirs."
-                            if lang else "")
+                lang_str = (
+                    f" Speak in {lang} regardless of the language the user speaks. "
+                    "Change response language only if the user directly instructs you "
+                    "to do so; do not infer a change from their message."
+                )
 
                 # Wait for news fetch (already running) and Phase 1 turn-complete
                 # in parallel — whichever takes longer determines the wait time
@@ -1879,9 +1888,10 @@ class JarvisLive:
         self._session_log = []    # reset immediately so the next session starts clean
 
         memory = load_memory()
-        lang_entry = memory.get("identity", {}).get("language", {})
+        response_prefs = memory.get("preferences", {}) or {}
+        lang_entry = response_prefs.get("response_language", {})
         lang = (lang_entry.get("value", "") if isinstance(lang_entry, dict) else str(lang_entry)).strip()
-        lang = lang or "English"
+        lang = lang or "British English"
 
         convo = "\n".join(log[-40:])   # cap at last 40 turns to stay within token budget
         prompt = (
@@ -1936,8 +1946,9 @@ class JarvisLive:
                     try:
                         alerts = await asyncio.to_thread(monitor_check_all)
                         memory = load_memory()
-                        lang_e = memory.get("identity", {}).get("language", {})
-                        lang   = (lang_e.get("value", "") if isinstance(lang_e, dict) else str(lang_e)).strip() or "English"
+                        response_prefs = memory.get("preferences", {}) or {}
+                        lang_e = response_prefs.get("response_language", {})
+                        lang = (lang_e.get("value", "") if isinstance(lang_e, dict) else str(lang_e)).strip() or "British English"
                         for alert in alerts:
                             msg = (
                                 f"{alert}\n\n"
