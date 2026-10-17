@@ -30,7 +30,7 @@ import random
 
 import numpy as np
 from PyQt6.QtCore import QLineF, QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF, QRadialGradient
+from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF, QRadialGradient
 
 from core.avatar_mesh import JAW_MAX, JAW_PIVOT, get_head_mesh
 
@@ -124,7 +124,8 @@ class HoloAvatar:
     # see-through glass wireframe. Flip here, or per instance.
     shaded = True
 
-    def __init__(self) -> None:
+    def __init__(self, appearance: str = "classic") -> None:
+        self.appearance = appearance if appearance in ("classic", "hatim") else "classic"
         mesh = get_head_mesh()
         self._v0 = mesh["verts"]
         self._n0 = mesh["normals"]
@@ -202,6 +203,12 @@ class HoloAvatar:
         self._v_wide = 0.0
         self._wide = 0.0           # smoothed lip spread, -1 round .. +1 spread
         self._v_peak = 0.18        # running estimate of this voice's loud level
+
+        # Personalised holographic treatment. These are small, local 3D meshes
+        # projected by the same camera and pose as the measured face, not a
+        # still image. The classic JARVIS avatar never allocates these patches.
+        self._hair_mesh = self._build_hair_mesh() if self.appearance == "hatim" else None
+        self._beard_mesh = self._build_beard_mesh() if self.appearance == "hatim" else None
 
     # ── animation ───────────────────────────────────────────────────────────
 
@@ -508,8 +515,222 @@ class HoloAvatar:
 
         if self.shaded:
             self._paint_surface(p, xs, ys, norms, verts, primary, bg, amp)
+        if self.appearance == "hatim":
+            # Dark swept-up quiff and chin/beard contour sit on the same
+            # perspective camera as the animated facial mesh.
+            self._paint_detail_mesh(p, self._hair_mesh, cx, cy, r, primary, accent,
+                                    bg, amp, hair=True)
+            self._paint_detail_mesh(p, self._beard_mesh, cx, cy, r, primary, accent,
+                                    bg, amp, hair=False)
         self._paint_wire(p, xs, ys, norms, verts, primary, bg, amp)
         self._paint_features(p, xs, ys, norms, r, primary, accent, bg, amp)
+        if self.appearance == "hatim":
+            self._paint_personalised_features(p, xs, ys, r, primary, accent, bg, amp)
+
+    @staticmethod
+    def _grid_mesh(vertices: np.ndarray, rows: int, cols: int) -> dict:
+        """Create the triangle and edge indices for a regular detail patch."""
+        faces = []
+        for row in range(rows - 1):
+            for col in range(cols - 1):
+                a = row * cols + col
+                b = a + 1
+                c = a + cols
+                d = c + 1
+                faces.extend(((a, c, b), (b, c, d)))
+        edges = set()
+        for a, b, c in faces:
+            edges.add((min(a, b), max(a, b)))
+            edges.add((min(b, c), max(b, c)))
+            edges.add((min(c, a), max(c, a)))
+        return {
+            "verts": np.ascontiguousarray(vertices, dtype=np.float32),
+            "faces": np.asarray(faces, dtype=np.int32),
+            "edges": np.asarray(sorted(edges), dtype=np.int32),
+        }
+
+    @staticmethod
+    def _build_hair_mesh() -> dict:
+        """A raised, swept hair cap with volume over the forehead and crown."""
+        xs = np.linspace(-0.67, 0.67, 17)
+        ts = np.linspace(0.0, 1.0, 9)
+        points = []
+        for t in ts:
+            for x in xs:
+                q = x / 0.67
+                side = abs(q)
+                hairline = 0.43 - 0.085 * side + 0.085 * math.exp(-((q + 0.12) / 0.42) ** 2)
+                crown = 1.055 - 0.19 * q * q
+                y = hairline + (crown - hairline) * t
+                # A swept quiff rises left-of-centre; the depth bulges forward
+                # at the front and rolls back towards the top of the skull.
+                y += 0.075 * math.exp(-((q + 0.25) / 0.30) ** 2) * t * t
+                z = (0.11 + 0.36 * math.sqrt(max(0.0, 1.0 - q * q))
+                     * (0.78 - 0.20 * t) + 0.045 * math.sin(math.pi * t))
+                z += 0.055 * math.exp(-((q + 0.23) / 0.30) ** 2) * t
+                points.append((x, y, z))
+        return HoloAvatar._grid_mesh(np.asarray(points), len(ts), len(xs))
+
+    @staticmethod
+    def _build_beard_mesh() -> dict:
+        """A tapered jaw/chin patch that follows the animated head in 3D."""
+        across = np.linspace(-1.0, 1.0, 15)
+        ts = np.linspace(0.0, 1.0, 7)
+        points = []
+        for t in ts:
+            width = 0.385 * (1.0 - t) ** 0.82 + 0.035
+            y_centre = -0.335 - 0.575 * t
+            for q in across:
+                x = q * width
+                y = y_centre - 0.035 * abs(q) * (1.0 - t)
+                z = 0.105 + 0.16 * (1.0 - t) + 0.105 * (1.0 - abs(q))
+                points.append((x, y, z))
+        return HoloAvatar._grid_mesh(np.asarray(points), len(ts), len(across))
+
+    def _project_detail_mesh(self, mesh: dict, cx: float, cy: float, r: float):
+        """Project a detail mesh through precisely the avatar's current head pose."""
+        verts = mesh["verts"]
+        yaw, pitch = math.cos(self._yaw), math.cos(self._pitch)
+        syaw, spitch = math.sin(self._yaw), math.sin(self._pitch)
+        transform = np.array([
+            [yaw, 0.0, syaw],
+            [spitch * syaw, pitch, -spitch * yaw],
+            [-pitch * syaw, spitch, pitch * yaw],
+        ], dtype=np.float32)
+        posed = verts @ transform.T
+        depth = _CAM_D - posed[:, 2]
+        np.maximum(depth, 0.35, out=depth)
+        scale = (_CAM_D / depth) * r
+        sx = cx + posed[:, 0] * scale
+        sy = cy - posed[:, 1] * scale
+        return posed, sx, sy
+
+    def _paint_detail_mesh(self, p: QPainter, mesh: dict | None,
+                           cx: float, cy: float, r: float,
+                           primary: QColor, accent: QColor, bg: QColor,
+                           amp: float, hair: bool) -> None:
+        """Shade a small volumetric hair/beard patch and trace its holographic lattice."""
+        if not mesh:
+            return
+        posed, sx, sy = self._project_detail_mesh(mesh, cx, cy, r)
+        faces = mesh["faces"]
+        depth = posed[:, 2]
+        order = np.argsort(depth[faces].mean(axis=1), kind="stable")
+        dark = QColor(5, 9, 18) if hair else QColor(7, 11, 20)
+
+        p.setPen(Qt.PenStyle.NoPen)
+        for face_id in order:
+            ids = faces[face_id]
+            z = float(depth[ids].mean())
+            if hair:
+                alpha = int(max(150, min(224, 174 + 34 * z + 12 * amp)))
+            else:
+                alpha = int(max(66, min(142, 82 + 65 * (1.0 - abs(float(posed[ids, 0].mean())))))
+            points = [QPointF(float(sx[j]), float(sy[j])) for j in ids]
+            p.setBrush(QBrush(_c(dark, alpha)))
+            p.drawPolygon(QPolygonF(points))
+
+        edges = mesh["edges"]
+        line_values = np.stack((sx[edges[:, 0]], sy[edges[:, 0]],
+                                sx[edges[:, 1]], sy[edges[:, 1]]), axis=1).tolist()
+        lines = [QLineF(*coords) for coords in line_values]
+        if hair:
+            p.setPen(QPen(_c(primary, 104 + 34 * amp), 0.85))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawLines(lines)
+            # A few brighter strands follow the upward sweep of the quiff.
+            cols = 17
+            strands = []
+            for col in (2, 5, 8, 11, 14):
+                for row in range(8):
+                    a = row * cols + col
+                    b = (row + 1) * cols + min(cols - 1, col + 1)
+                    strands.append(QLineF(float(sx[a]), float(sy[a]),
+                                          float(sx[b]), float(sy[b])))
+            p.setPen(QPen(_c(accent, 75 + 75 * amp), 1.05))
+            p.drawLines(strands)
+        else:
+            p.setPen(QPen(_c(primary, 72 + 25 * amp), 0.72))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawLines(lines)
+
+    def _paint_personalised_features(self, p: QPainter, xs, ys, r: float,
+                                     primary: QColor, accent: QColor, bg: QColor,
+                                     amp: float) -> None:
+        """Add transparent rectangular glasses and a subtle holographic moustache."""
+        face = max(0.0, math.cos(self._yaw) * math.cos(self._pitch)) ** 2
+        if face < 0.04:
+            return
+
+        lm = self._lm
+        lens_rects = []
+        for key in ("eye_l", "eye_r"):
+            ring = QPolygonF([QPointF(float(x), float(y))
+                              for x, y in zip(xs[lm[key]], ys[lm[key]])])
+            eye = ring.boundingRect()
+            pad_x = max(2.0, eye.width() * 0.19)
+            pad_y = max(1.7, eye.height() * 0.55)
+            lens = QRectF(eye.x() - pad_x, eye.y() - pad_y,
+                          eye.width() + 2.0 * pad_x, eye.height() + 2.0 * pad_y)
+            lens_rects.append(lens)
+
+        lens_rects.sort(key=lambda rect: rect.center().x())
+        left, right = lens_rects
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(_c(accent, 170 * face), max(1.0, r * 0.008)))
+        for lens in lens_rects:
+            p.drawRoundedRect(lens, max(2.0, lens.height() * 0.24),
+                             max(2.0, lens.height() * 0.24))
+            # A restrained inner rim gives the clear glasses some thickness.
+            inner = lens.adjusted(1.4, 1.2, -1.4, -1.2)
+            p.setPen(QPen(_c(primary, 82 * face), 0.7))
+            p.drawRoundedRect(inner, max(1.5, inner.height() * 0.22),
+                              max(1.5, inner.height() * 0.22))
+            p.setPen(QPen(_c(accent, 170 * face), max(1.0, r * 0.008)))
+
+        bridge_y = (left.center().y() + right.center().y()) * 0.5 - left.height() * 0.05
+        p.setPen(QPen(_c(accent, 190 * face), max(1.1, r * 0.010)))
+        p.drawLine(QPointF(left.right(), bridge_y),
+                   QPointF(right.left(), bridge_y))
+        # Short temple pieces and hinge dots follow the head width.
+        temple_len = max(3.0, r * 0.11)
+        p.drawLine(QPointF(left.left(), left.center().y()),
+                   QPointF(left.left() - temple_len, left.center().y() + r * 0.015))
+        p.drawLine(QPointF(right.right(), right.center().y()),
+                   QPointF(right.right() + temple_len, right.center().y() + r * 0.015))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(_c(accent, 210 * face)))
+        p.drawEllipse(QPointF(left.left(), left.center().y()), 1.4, 1.4)
+        p.drawEllipse(QPointF(right.right(), right.center().y()), 1.4, 1.4)
+
+        # The moustache is pinned to the upper-lip contour rather than the
+        # viewport, so it follows the head's turn and pitch.
+        upper = lm["lips_out"][10:]
+        ux, uy = xs[upper], ys[upper]
+        left_x, right_x = float(ux.min()), float(ux.max())
+        top_y = float(uy.min())
+        base_y = float(np.mean(uy)) + max(0.5, (float(uy.max()) - top_y) * 0.06)
+        width = max(4.0, right_x - left_x)
+        height = max(2.2, (float(uy.max()) - top_y) * 0.48)
+        mid_x = (left_x + right_x) * 0.5
+        moustache = QPainterPath()
+        moustache.moveTo(left_x, base_y)
+        moustache.cubicTo(left_x + width * 0.16, top_y - height * 0.70,
+                          mid_x - width * 0.14, top_y - height * 0.10,
+                          mid_x, top_y - height * 0.18)
+        moustache.cubicTo(mid_x + width * 0.14, top_y - height * 0.10,
+                          right_x - width * 0.16, top_y - height * 0.70,
+                          right_x, base_y)
+        moustache.cubicTo(right_x - width * 0.18, base_y + height * 0.40,
+                          mid_x + width * 0.11, base_y + height * 0.12,
+                          mid_x, base_y + height * 0.22)
+        moustache.cubicTo(mid_x - width * 0.11, base_y + height * 0.12,
+                          left_x + width * 0.18, base_y + height * 0.40,
+                          left_x, base_y)
+        moustache.closeSubpath()
+        p.setPen(QPen(_c(primary, 115 * face), 0.65))
+        p.setBrush(QBrush(_c(QColor(7, 10, 17), 188 * face)))
+        p.drawPath(moustache)
 
     def _paint_surface(self, p: QPainter, xs, ys, norms, verts,
                        primary: QColor, bg: QColor, amp: float) -> None:
