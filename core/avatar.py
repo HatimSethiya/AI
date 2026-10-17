@@ -625,7 +625,7 @@ class HoloAvatar:
             if hair:
                 alpha = int(max(150, min(224, 174 + 34 * z + 12 * amp)))
             else:
-                alpha = int(max(66, min(142, 82 + 65 * (1.0 - abs(float(posed[ids, 0].mean())))))
+                alpha = int(max(66, min(142, 82 + 65 * (1.0 - abs(float(posed[ids, 0].mean()))))))
             points = [QPointF(float(sx[j]), float(sy[j])) for j in ids]
             p.setBrush(QBrush(_c(dark, alpha)))
             p.drawPolygon(QPolygonF(points))
