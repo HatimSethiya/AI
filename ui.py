@@ -423,9 +423,15 @@ class HudCanvas(QWidget):
             except Exception:
                 self._avatar = None
 
-        # The custom portrait is a separate HUD presentation mode. Keep its
-        # resource independent of the animated mesh so either option can fail
-        # safely without affecting the rest of the interface.
+        # A second instance of the same animated mesh gives the custom look its
+        # own expression state while sharing the camera, lighting and lip-sync
+        # renderer. Keep the generated portrait only as a safe fallback.
+        self._portrait_avatar = None
+        if HoloAvatar is not None:
+            try:
+                self._portrait_avatar = HoloAvatar(appearance="hatim")
+            except Exception as exc:
+                print(f"[HUD] Personalised hologram unavailable: {exc}")
         self._portrait_pixmap = QPixmap(str(BASE_DIR / "core" / "avatar_portrait.jpg"))
 
         # Which centrepiece to draw. Read once here and changed live by the
@@ -611,12 +617,17 @@ class HudCanvas(QWidget):
         # starts talking. Same lesson the head's sway taught.
         self._core_phase += min(0.10, max(0.0, dt))
 
-        if self._avatar is not None and self.hud_style == "face":
-            self._avatar.step(dt, amp, speaking=self.speaking,
-                              muted=self.muted, state=self.state,
-                              v_open=v_open, v_wide=v_wide or 0.0,
-                              v_level=v_level, v_seq=v_seq,
-                              v_hop=(sched[2] if sched is not None else 0.02))
+        _active_avatar = (
+            self._avatar if self.hud_style == "face"
+            else self._portrait_avatar if self.hud_style == "portrait"
+            else None
+        )
+        if _active_avatar is not None:
+            _active_avatar.step(dt, amp, speaking=self.speaking,
+                                muted=self.muted, state=self.state,
+                                v_open=v_open, v_wide=v_wide or 0.0,
+                                v_level=v_level, v_seq=v_seq,
+                                v_hop=(sched[2] if sched is not None else 0.02))
         else:
             # Fallback core: slow "breathing" base target, lifted by the level.
             if now - self._last_t > (0.12 if self.speaking else 0.5):
@@ -868,11 +879,16 @@ class HudCanvas(QWidget):
         # capped by width, so it fills the HUD at any window size — including
         # fullscreen — without ever colliding with the status text below.
         _sy_status = cy + fw * 0.40
-        if self._avatar is not None and self.hud_style == "face":
+        _active_avatar = (
+            self._avatar if self.hud_style == "face"
+            else self._portrait_avatar if self.hud_style == "portrait"
+            else None
+        )
+        if _active_avatar is not None:
             _band_t = 12.0
             _band_h = max(60.0, _sy_status - 12.0 - _band_t)
-            _r_head = min(fw * 0.355, _band_h / (self._avatar.SPAN + 0.08))
-            _head_cy = _band_t + (_band_h - self._avatar.SPAN * _r_head) / 2.0 + _r_head
+            _r_head = min(fw * 0.355, _band_h / (_active_avatar.SPAN + 0.08))
+            _head_cy = _band_t + (_band_h - _active_avatar.SPAN * _r_head) / 2.0 + _r_head
 
             if self.muted:
                 _main = _acc = qcol(C.MUTED_C)
@@ -886,7 +902,7 @@ class HudCanvas(QWidget):
                     _acc = qcol(C.GREEN)
                 else:
                     _acc = qcol(C.PRI)
-            self._avatar.paint(p, cx, _head_cy, _r_head, _main, _acc, qcol(C.BG))
+            _active_avatar.paint(p, cx, _head_cy, _r_head, _main, _acc, qcol(C.BG))
 
         elif self.hud_style == "portrait" and not self._portrait_pixmap.isNull():
             # Custom 3D-style portrait generated for the HUD. A very slight
