@@ -76,10 +76,10 @@ def save_assistant_config(assistant_name: str, user_name: str) -> None:
 
 
 # ── Assistant voice ──────────────────────────────────────────────────────────
-# Gemini Live prebuilt voices. Names are proper nouns — identical in every
-# language, so this list is safe to show verbatim in any locale.
-AVAILABLE_VOICES = ["Charon", "Puck", "Kore", "Fenrir", "Aoede"]
-DEFAULT_VOICE    = "Charon"
+# Gemini Live prebuilt voices. Keep the selected voice consistent across languages.
+# Algieba is the primary smooth voice; Gacrux is a mature alternative.
+AVAILABLE_VOICES = ["Algieba", "Gacrux", "Algenib", "Charon", "Puck", "Kore", "Fenrir", "Aoede"]
+DEFAULT_VOICE    = "Algieba"
 
 
 def get_voice() -> str:
