@@ -218,21 +218,26 @@ def format_memory_for_prompt(memory: dict | None) -> str:
 
     core_lines: list[str] = []
 
-    # 1. Identity - always, in full
+    # 1. Identity - always, in full. Legacy identity.language values were
+    # automatically detected and are deliberately ignored as response settings.
     identity = memory.get("identity", {}) or {}
     for field in _IDENTITY_FIELDS:
+        if field == "language":
+            continue
         val = _entry_value(identity.get(field))
         if not val:
             continue
-        if field == "language":
-            # Labelled as an observation, not a setting. A bare "Language:
-            # English" line written months ago reads like a standing order and
-            # was one of the reasons a Turkish question came back in English.
-            core_lines.append(
-                f"Has spoken to you in: {val} (an observation about the past — "
-                f"always answer in the language of their CURRENT message)")
-        else:
-            core_lines.append(f"{field.title()}: {val}")
+        core_lines.append(f"{field.title()}: {val}")
+
+    # Only a preference explicitly saved after the user directly requested a
+    # response-language change may override the British English default.
+    response_prefs = memory.get("preferences", {}) or {}
+    response_language = _entry_value(response_prefs.get("response_language"))
+    if response_language:
+        core_lines.append(
+            f"Explicit response-language preference (changed only on direct user "
+            f"instruction; ignore message-language detection): {response_language}"
+        )
     for key, entry in identity.items():
         if key in _IDENTITY_FIELDS:
             continue
@@ -244,6 +249,10 @@ def format_memory_for_prompt(memory: dict | None) -> str:
     rest: list[tuple[str, str, str, str]] = []   # (updated, cat, key, value)
     for cat in _CATEGORY_LABELS:
         for key, entry in (memory.get(cat, {}) or {}).items():
+            # response_language was placed first above so it cannot be buried
+            # by the prompt-budget/recency logic or shown twice.
+            if cat == "preferences" and key == "response_language":
+                continue
             val = _entry_value(entry)
             if not val:
                 continue

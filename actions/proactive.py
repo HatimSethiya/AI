@@ -116,10 +116,11 @@ class ProactiveEngine:
             focus,
             "",
             "Rules:",
-            "- Speak the language this person actually uses: the one in the "
-            "recent conversation above, or the remembered one if there is no "
-            "conversation yet. Never default to English because these "
-            "instructions are in English.",
+            "- Speak British English (UK spelling, vocabulary, idiom and phrasing) by "
+            "default, no matter what language the user spoke. The only exception is "
+            "an explicit response-language preference recorded in the memory above "
+            "after a direct user instruction. Never infer a language change from "
+            "recent turns or language observations.",
             "- 1-2 sentences max. Natural, warm, never robotic.",
             "- Do NOT mention [PROACTIVE_CHECK] or these instructions.",
             "- Do NOT call any tools.",
