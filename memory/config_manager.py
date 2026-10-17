@@ -130,16 +130,14 @@ def save_push_to_talk_enabled(enabled: bool) -> None:
     _save_flag("push_to_talk_enabled", enabled)
 
 
-HUD_STYLES = ("face", "core")
+HUD_STYLES = ("face", "portrait", "core")
 
 
 def get_hud_style() -> str:
-    """Which centrepiece the HUD draws: the animated head, or the reactor core.
+    """Which centrepiece the HUD draws: animated face, custom portrait, or core.
 
-    Taste, not capability — both render in the same software painter and cost
-    about the same. Defaults to the head because that is what MARK LIV shipped
-    with; anyone who preferred the older look can switch back in ⚙ and the
-    choice survives a restart.
+    The selected mode is persisted in the existing settings file and survives
+    a restart. Unknown values safely fall back to the original animated face.
     """
     v = str(load_api_keys().get("hud_style", "face")).strip().lower()
     return v if v in HUD_STYLES else "face"

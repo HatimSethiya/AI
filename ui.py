@@ -423,6 +423,11 @@ class HudCanvas(QWidget):
             except Exception:
                 self._avatar = None
 
+        # The custom portrait is a separate HUD presentation mode. Keep its
+        # resource independent of the animated mesh so either option can fail
+        # safely without affecting the rest of the interface.
+        self._portrait_pixmap = QPixmap(str(BASE_DIR / "core" / "avatar_portrait.jpg"))
+
         # Which centrepiece to draw. Read once here and changed live by the
         # settings toggle; the avatar object is kept either way so switching
         # back is instant and costs no reload.
@@ -882,6 +887,26 @@ class HudCanvas(QWidget):
                 else:
                     _acc = qcol(C.PRI)
             self._avatar.paint(p, cx, _head_cy, _r_head, _main, _acc, qcol(C.BG))
+
+        elif self.hud_style == "portrait" and not self._portrait_pixmap.isNull():
+            # Custom 3D-style portrait generated for the HUD. A very slight
+            # audio-reactive scale keeps it integrated with the live assistant
+            # without pretending the still image has a rigged/lip-synced mesh.
+            _band_t = 12.0
+            _band_h = max(60.0, _sy_status - 12.0 - _band_t)
+            _portrait_side = min(fw * 0.94, _band_h)
+            _portrait_side *= 1.0 + min(0.025, max(0.0, self._amp_disp) * 0.05)
+            _portrait_rect = QRectF(
+                cx - _portrait_side / 2.0,
+                _band_t + (_band_h - _portrait_side) / 2.0,
+                _portrait_side,
+                _portrait_side,
+            )
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            p.drawPixmap(_portrait_rect, self._portrait_pixmap,
+                         QRectF(self._portrait_pixmap.rect()))
+            p.restore()
 
         # reactor core — the other centrepiece, and the fallback if the head
         # could not be built. There is no third path: the old face.png branch
@@ -5139,29 +5164,32 @@ class MainWindow(QMainWindow):
 
     def _refresh_hud_btn(self):
         from memory.config_manager import get_hud_style
-        face = get_hud_style() == "face"
-        # Neither state is "off", so both read as active — this is a choice
-        # between two things, not a switch with a disabled side.
+        mode = get_hud_style()
+        labels = {
+            "face": "🧑  HUD: ANIMATED FACE",
+            "portrait": "👤  HUD: YOUR 3D FACE",
+            "core": "◉  HUD: REACTOR CORE",
+        }
+        tooltips = {
+            "face": "The original animated, audio-reactive face. Click to switch to your custom 3D-style portrait.",
+            "portrait": "Your custom 3D-style portrait in the HUD. Click to switch to the reactor core.",
+            "core": "The animated reactor core. Click to return to the original animated face.",
+        }
         style = f"""
             QPushButton {{ background: {C.PANEL2}; color: {C.PRI};
                 border: 1px solid {C.BORDER_A}; border-radius: 3px;
                 text-align: left; padding: 0 8px; }}
             QPushButton:hover {{ color: {C.WHITE}; border: 1px solid {C.BORDER_B}; }}"""
-        self._hud_btn.setText("🧑  HUD: ANIMATED FACE" if face
-                              else "◉  HUD: REACTOR CORE")
+        self._hud_btn.setText(labels.get(mode, labels["face"]))
         self._hud_btn.setStyleSheet(style)
-        self._hud_btn.setToolTip(
-            "An animated head that speaks your words and shows what JARVIS is "
-            "doing. Tap to switch to the reactor core."
-            if face else
-            "A reactor core that turns with the state and moves with your voice. "
-            "Tap to switch to the animated head.")
+        self._hud_btn.setToolTip(tooltips.get(mode, tooltips["face"]))
 
     def _toggle_hud_style(self):
-        """Swap the centrepiece. Both objects stay in memory, so the change is
-        instant and switching back costs nothing."""
+        """Cycle through the original animated face, custom portrait and reactor core."""
         from memory.config_manager import get_hud_style, save_hud_style
-        want = "core" if get_hud_style() == "face" else "face"
+        modes = ("face", "portrait", "core")
+        current = get_hud_style()
+        want = modes[(modes.index(current) + 1) % len(modes)] if current in modes else "face"
         save_hud_style(want)
         try:
             self.hud.hud_style = want
@@ -5169,9 +5197,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._refresh_hud_btn()
-        self._log.append_log(
-            "SYS: HUD switched to the animated face." if want == "face"
-            else "SYS: HUD switched to the reactor core.")
+        messages = {
+            "face": "SYS: HUD switched to the original animated face.",
+            "portrait": "SYS: HUD switched to the custom 3D-style portrait.",
+            "core": "SYS: HUD switched to the reactor core.",
+        }
+        self._log.append_log(messages[want])
 
     def _toggle_ptt(self):
         from memory.config_manager import (get_push_to_talk_enabled,
